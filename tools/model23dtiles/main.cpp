@@ -3,6 +3,8 @@
 #include <osgDB/ConvertUTF>
 #include <osgDB/ReadFile>
 #include <iostream>
+#include <cstdlib>
+#include <vector>
 #include <osgDB/FileUtils>
 #include <osg/MatrixTransform>
 #include <osgUtil/SmoothingVisitor>
@@ -237,14 +239,24 @@ void applyProjection(osg::ref_ptr<osg::Node>& node, const std::string epsg, doub
 			OSG_NOTICE << "Error creating projection context!" << std::endl;
 			exit(0);
 		}
-#ifndef NDEBUG
-		const std::string projDBPath = "./share/proj";
-#else
-		const std::string projDBPath = osgDB::convertStringFromCurrentCodePageToUTF8(osgDB::getCurrentWorkingDirectory()) + "\\share\\proj";
-		OSG_NOTICE << projDBPath << "\n";
-#endif // !NDEBUG
-		const char* searchPath[] = { projDBPath.c_str() };
-		proj_context_set_search_paths(ctx, 1, searchPath);
+        std::vector<std::string> projSearchPaths;
+        if (const char* projLib = std::getenv("PROJ_LIB"); projLib && *projLib)
+        {
+            projSearchPaths.emplace_back(projLib);
+        }
+        const std::string currentWorkingDirectory = osgDB::convertStringFromCurrentCodePageToUTF8(osgDB::getCurrentWorkingDirectory());
+        projSearchPaths.emplace_back(osgDB::concatPaths(currentWorkingDirectory, "share/proj"));
+        projSearchPaths.emplace_back("./share/proj");
+        projSearchPaths.emplace_back("/usr/share/proj");
+        projSearchPaths.emplace_back("/usr/local/share/proj");
+
+        std::vector<const char*> searchPath;
+        searchPath.reserve(projSearchPaths.size());
+        for (const auto& path : projSearchPaths)
+        {
+            searchPath.push_back(path.c_str());
+        }
+        proj_context_set_search_paths(ctx, static_cast<int>(searchPath.size()), searchPath.data());
 		const char* dbPath = proj_context_get_database_path(ctx);
 		if (!dbPath) {
 			OSG_NOTICE << "Proj database not found. Please check your search path." << std::endl;
