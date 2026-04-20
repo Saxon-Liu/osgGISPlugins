@@ -27,6 +27,10 @@ endif()
 
 # 引入 Vcpkg 工具链
 include(${CMAKE_TOOLCHAIN_FILE})
+if(EXISTS "/app/vcpkg_installed/${VCPKG_TARGET_TRIPLET}")
+    list(PREPEND CMAKE_PREFIX_PATH "/app/vcpkg_installed/${VCPKG_TARGET_TRIPLET}")
+endif()
+list(PREPEND CMAKE_MODULE_PATH "${PROJECT_ROOT_DIR}/cmake")
 
 # 设置头文件全局包含路径（如不推荐全局 include，可转为 target_include_directories）
 include_directories(
@@ -58,6 +62,8 @@ set(CMAKE_MINSIZEREL_POSTFIX "_min")
 
 # 构建共享库
 set(BUILD_SHARED_LIBS ON)
+
+option(OSGGIS_BUILD_GUI "Build GUI tool" ON)
 
 project(osgGISPlugins)
 
