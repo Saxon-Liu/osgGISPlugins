@@ -1,6 +1,7 @@
 ############################################
 # builder1：基础系统 + vcpkg + Python + FBX SDK
 ############################################
+ARG BUILD_GUI=OFF
 FROM docker.m.daocloud.io/library/ubuntu:20.04 AS base
 
 LABEL author="wang tian yu"
@@ -9,13 +10,19 @@ LABEL website="https://gitee.com/wtyhz/osg-gis-plugins"
 ARG GHPROXY=https://ghfast.top/https://
 ENV GHPROXY=${GHPROXY}
 ENV TZ=Asia/Shanghai
+ENV VCPKG_DOWNLOADS=/var/cache/vcpkg/downloads
+ENV VCPKG_DEFAULT_BINARY_CACHE=/var/cache/vcpkg/binary-cache
+ENV VCPKG_BINARY_SOURCES=clear;files,${VCPKG_DEFAULT_BINARY_CACHE},readwrite
+ENV CCACHE_DIR=/var/cache/ccache
 
 WORKDIR /app
 
 # FBX SDK 安装包
 COPY 3rdparty/lib/linux/* /tmp/fbx_sdk/
 
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && echo "$TZ" > /etc/timezone \
     && sed -i 's|archive.ubuntu.com|mirrors.aliyun.com|g' /etc/apt/sources.list \
     && sed -i 's|security.ubuntu.com|mirrors.aliyun.com|g' /etc/apt/sources.list \
@@ -25,12 +32,13 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
         build-essential pkg-config \
         autoconf libtool bison \
         cmake gnupg2 \
+        ccache \
         python3 libffi-dev \
         xorg-dev libglu1-mesa-dev \
         libxinerama-dev libxcursor-dev \
         libxrandr-dev libxi-dev \
         zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/*
+    && mkdir -p "${VCPKG_DOWNLOADS}" "${VCPKG_DEFAULT_BINARY_CACHE}" "${CCACHE_DIR}"
 
 # vcpkg
 RUN git clone ${GHPROXY}github.com/microsoft/vcpkg.git /app/vcpkg \
@@ -41,7 +49,9 @@ RUN git clone ${GHPROXY}github.com/microsoft/vcpkg.git /app/vcpkg \
     && ln -s /app/vcpkg/vcpkg /usr/bin/vcpkg
 
 # Python 3.7
-RUN apt-get update \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
     && apt-get install -y \
         libssl-dev libbz2-dev libreadline-dev \
         libsqlite3-dev libncurses5-dev \
@@ -50,7 +60,7 @@ RUN apt-get update \
     && wget https://mirrors.aliyun.com/python-release/source/Python-3.7.17.tgz \
     && tar -xzf Python-3.7.17.tgz \
     && cd Python-3.7.17 \
-    && ./configure --enable-optimizations --prefix=/usr/local/python3.7 \
+    && ./configure --prefix=/usr/local/python3.7 \
     && make -j$(nproc) \
     && make install \
     && ln -sf /usr/local/python3.7/bin/python3.7 /usr/bin/python3 \
@@ -67,27 +77,45 @@ RUN chmod +x /tmp/fbx_sdk/fbx20180_fbxsdk_linux \
 # deps：只负责 vcpkg install（缓存核心）
 ############################################
 FROM base AS vcpkg-deps
+ARG BUILD_GUI
 WORKDIR /app
 
-COPY vcpkg.json .
-RUN vcpkg install --triplet=x64-linux-dynamic
+COPY vcpkg.json vcpkg.docker.json ./
+RUN --mount=type=cache,target=/var/cache/vcpkg/downloads,sharing=locked \
+    --mount=type=cache,target=/var/cache/vcpkg/binary-cache,sharing=locked \
+    --mount=type=cache,target=/app/buildtrees,sharing=locked \
+    --mount=type=cache,target=/app/packages,sharing=locked \
+    --mount=type=cache,target=/var/cache/vcpkg/installed,sharing=locked \
+    if [ "$BUILD_GUI" != "ON" ] && [ -f /app/vcpkg.docker.json ]; then cp /app/vcpkg.docker.json /app/vcpkg.json; fi \
+    && vcpkg install --triplet=x64-linux-dynamic --x-install-root=/var/cache/vcpkg/installed \
+    && rm -rf /app/vcpkg_installed \
+    && mkdir -p /app/vcpkg_installed \
+    && cp -a /var/cache/vcpkg/installed/. /app/vcpkg_installed/
 
 
 ############################################
 # builder：只编译你自己的源码
 ############################################
 FROM vcpkg-deps AS build
+ARG BUILD_GUI
 WORKDIR /app
 
 COPY . .
 
-RUN mkdir -p build && cd build \
-    && cmake .. \
+RUN --mount=type=cache,target=/var/cache/ccache,sharing=locked \
+    --mount=type=cache,target=/app/build,sharing=locked \
+    if [ "$BUILD_GUI" != "ON" ] && [ -f /app/vcpkg.docker.json ]; then cp /app/vcpkg.docker.json /app/vcpkg.json; fi \
+    && cmake -S /app -B /app/build \
         -DCMAKE_TOOLCHAIN_FILE=/app/vcpkg/scripts/buildsystems/vcpkg.cmake \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/app/dist \
-    && make -j$(nproc) \
-    && make install
+        -DVCPKG_MANIFEST_MODE=OFF \
+        -DVCPKG_INSTALLED_DIR=/app/vcpkg_installed \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+        -DOSGGIS_BUILD_GUI=${BUILD_GUI} \
+    && cmake --build /app/build --parallel $(nproc) \
+    && cmake --install /app/build
 
 
 ############################################
@@ -101,15 +129,21 @@ WORKDIR /app
 COPY --from=build /app/dist/ /app/
 COPY --from=build /app/vcpkg_installed/x64-linux-dynamic/lib /app/vcpkg_libs
 COPY --from=build /app/vcpkg_installed/x64-linux-dynamic/plugins /app/vcpkg_libs/plugins
+COPY --from=build /app/vcpkg_installed/x64-linux-dynamic/share/proj /app/share/proj
 COPY --from=base /usr/local/lib/gcc4/x64/release /app/fbx_libs
 
 ENV LD_LIBRARY_PATH="/app/vcpkg_libs:/app/vcpkg_libs/plugins:/app/fbx_libs"
+ENV PROJ_LIB=/app/share/proj
 ENV LANG=zh_CN.UTF-8  
 ENV LANGUAGE=zh_CN:zh  
 ENV LC_ALL=zh_CN.UTF-8  
 
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && echo "$TZ" > /etc/timezone \
+    && sed -i 's|archive.ubuntu.com|mirrors.aliyun.com|g' /etc/apt/sources.list \
+    && sed -i 's|security.ubuntu.com|mirrors.aliyun.com|g' /etc/apt/sources.list \
     && apt-get update \
     && apt-get install -y \
         libgl1-mesa-glx \
@@ -126,6 +160,4 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && mv osgdb_fbx.so /app/vcpkg_libs/plugins/osgPlugins-3.6.5/ \
     && mv osgdb_ktx.so /app/vcpkg_libs/plugins/osgPlugins-3.6.5/ \
     && mv osgdb_gltf.so /app/vcpkg_libs/plugins/osgPlugins-3.6.5/ \
-    && mv osgdb_webp.so /app/vcpkg_libs/plugins/osgPlugins-3.6.5/ \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && mv osgdb_webp.so /app/vcpkg_libs/plugins/osgPlugins-3.6.5/

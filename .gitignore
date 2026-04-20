@@ -9,6 +9,8 @@ out/**
 # Visual Studio 相关文件夹和配置
 .vs/
 .vscode/
+.history/
+/logs/**
 
 # 忽略编译生成的列表和日志文件
 list.txt

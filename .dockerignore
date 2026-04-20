@@ -8,10 +8,17 @@ cmake-build-*
 *.o
 *.so
 *.a
+output/
+vcpkg/
+3rdparty/include/windows/
+3rdparty/lib/windows/
 # 日志/临时文件
 logs
 tmp
 *.log
+*.tar
+*.tar.gz
+*.tgz
 # 编辑器配置
 .vscode
 .idea
@@ -20,3 +27,4 @@ tmp
 README.md
 LICENSE
 *.md
+.history
