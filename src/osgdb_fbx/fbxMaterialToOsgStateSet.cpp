@@ -2,6 +2,7 @@
 #include <osgdb_gltf/material/GltfMaterial.h>
 #include <osgdb_gltf/material/GltfPbrMRMaterial.h>
 #include <osgdb_gltf/material/GltfPbrSGMaterial.h>
+#include <algorithm>
 #include <sstream>
 #include <osg/TexMat>
 #include <osgDB/ReadFile>
@@ -461,10 +462,14 @@ StateSetContent FbxMaterialToOsgStateSet::convert(const FbxSurfaceMaterial* pFbx
 
 			color = pFbxLambert->Emissive.Get();
 			factor = pFbxLambert->EmissiveFactor.Get();
-			pOsgMat->setEmission(osg::Material::FRONT_AND_BACK, osg::Vec4(
+			const osg::Vec3f emissiveColor(
 				static_cast<float>(color[0] * factor),
 				static_cast<float>(color[1] * factor),
-				static_cast<float>(color[2] * factor),
+				static_cast<float>(color[2] * factor));
+			pOsgMat->setEmission(osg::Material::FRONT_AND_BACK, osg::Vec4(
+				emissiveColor.x(),
+				emissiveColor.y(),
+				emissiveColor.z(),
 				1.0f));
 
 			// get maps factors...
@@ -507,24 +512,23 @@ StateSetContent FbxMaterialToOsgStateSet::convert(const FbxSurfaceMaterial* pFbx
 			emissive_strength_extension->setEmissiveStrength(1.0);
 			mat->materialExtensions.push_back(emissive_strength_extension);
 
-			mat->emissiveFactor = { static_cast<float>(color[0] * factor),
-				static_cast<float>(color[1] * factor),
-				static_cast<float>(color[2] * factor) };
+			mat->emissiveFactor = { emissiveColor.x(), emissiveColor.y(), emissiveColor.z() };
 			if (shadingModel.Lower() == "blinn" || shadingModel.Lower() == "phong") {
 				pOsgMat->setName(pFbxMat->GetName());
 
 				auto getRoughness = [&](float shininess) { return sqrtf(2.0f / (2.0f + shininess)); };
-				mat->metallicFactor = 0.4;
+				mat->metallicFactor = 0.0;
+				mat->roughnessFactor = 0.85f;
 				const FbxProperty shininessProp = pFbxMat->FindProperty("Shininess");
 				if (shininessProp.IsValid()) {
-					FbxDouble roughness = shininessProp.Get<FbxDouble>();
-					mat->roughnessFactor = getRoughness(roughness);
+					const float roughness = getRoughness(static_cast<float>(shininessProp.Get<FbxDouble>()));
+					mat->roughnessFactor = std::max(0.35f, roughness);
 				}
 				else {
 					const FbxProperty shininessExponentProp = pFbxMat->FindProperty("ShininessExponent");
 					if (shininessExponentProp.IsValid()) {
-						FbxDouble roughness = shininessExponentProp.Get<FbxDouble>();
-						mat->roughnessFactor = getRoughness(roughness);
+						const float roughness = getRoughness(static_cast<float>(shininessExponentProp.Get<FbxDouble>()));
+						mat->roughnessFactor = std::max(0.35f, roughness);
 					}
 				}
 			}
